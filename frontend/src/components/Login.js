@@ -4,6 +4,8 @@ import { gql } from '@apollo/client';
 import { useMutation } from '@apollo/client/react/index.js'; 
 import { useNavigate, Link } from 'react-router-dom';
 import { Lock, Mail, Loader2, ArrowRight } from 'lucide-react';
+import EmailAuthButton from './EmailAuthButton';
+import { signInWithEmail } from '../services/firebaseAuthService';
 
 const LOGIN_USER = gql`
   mutation Login($email: String!, $password: String!) {
@@ -20,6 +22,8 @@ const LOGIN_USER = gql`
 
 const Login = () => {
   const [formData, setFormData] = useState({ email: '', password: '' });
+  const [firebaseLoading, setFirebaseLoading] = useState(false);
+  const [firebaseError, setFirebaseError] = useState('');
   const navigate = useNavigate();
 
   const [login, { loading, error }] = useMutation(LOGIN_USER, {
@@ -46,6 +50,34 @@ const Login = () => {
   const handleSubmit = (e) => {
     e.preventDefault();
     login({ variables: { ...formData } });
+  };
+
+  const handleFirebaseSignIn = async () => {
+    setFirebaseLoading(true);
+    setFirebaseError('');
+    
+    const result = await signInWithEmail(formData.email, formData.password);
+    
+    if (result.success) {
+      // Get Firebase token and store it
+      const token = await result.user.getIdToken();
+      localStorage.setItem('firebaseToken', token);
+      localStorage.setItem('firebaseUser', JSON.stringify({
+        uid: result.user.uid,
+        email: result.user.email,
+        displayName: result.user.displayName
+      }));
+      
+      // Dispatch event so Navbar re-renders
+      window.dispatchEvent(new Event('authChange'));
+      
+      // Redirect to home or dashboard
+      navigate('/freelancer-dashboard');
+    } else {
+      setFirebaseError(result.error || 'Authentication failed');
+    }
+    
+    setFirebaseLoading(false);
   };
 
   return (
@@ -76,10 +108,26 @@ const Login = () => {
           </div>
 
           {error && <p className="text-red-500 text-sm bg-red-50 p-2 rounded">Invalid Credentials</p>}
+          {firebaseError && <p className="text-red-500 text-sm bg-red-50 p-2 rounded">{firebaseError}</p>}
 
           <button disabled={loading} className="w-full bg-gradient-to-r from-teal-500 to-cyan-500 text-white py-4 rounded-xl font-bold hover:shadow-xl hover:shadow-teal-500/30 transition flex justify-center items-center gap-2">
             {loading ? <Loader2 className="animate-spin" /> : <><span>Sign In</span><ArrowRight size={18} /></>}
           </button>
+
+          <div className="relative">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-slate-200"></div>
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="px-2 bg-white text-slate-500">Or continue with</span>
+            </div>
+          </div>
+
+          <EmailAuthButton 
+            onClick={handleFirebaseSignIn}
+            disabled={firebaseLoading || !formData.email || !formData.password}
+            label={firebaseLoading ? "Signing in..." : "Sign in with Email"}
+          />
         </form>
 
         <p className="mt-6 text-center text-slate-500 text-sm">
