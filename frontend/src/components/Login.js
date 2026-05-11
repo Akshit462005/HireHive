@@ -5,7 +5,7 @@ import { useMutation } from '@apollo/client/react/index.js';
 import { useNavigate, Link } from 'react-router-dom';
 import { Lock, Mail, Loader2, ArrowRight } from 'lucide-react';
 import EmailAuthButton from './EmailAuthButton';
-import { signInWithEmail } from '../services/firebaseAuthService';
+import { signInWithGoogle } from '../services/firebaseAuthService';
 
 const LOGIN_USER = gql`
   mutation Login($email: String!, $password: String!) {
@@ -25,6 +25,70 @@ const Login = () => {
   const [firebaseLoading, setFirebaseLoading] = useState(false);
   const [firebaseError, setFirebaseError] = useState('');
   const navigate = useNavigate();
+
+  const completeGoogleSession = async (firebaseUser) => {
+    if (!firebaseUser) return;
+
+    try {
+      const backendResult = await fetch('http://localhost:4000/graphql', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          query: `
+            mutation GoogleAuth($email: String!, $username: String) {
+              googleAuth(email: $email, username: $username) {
+                token
+                user {
+                  id
+                  username
+                  role
+                }
+              }
+            }
+          `,
+          variables: {
+            email: firebaseUser.email,
+            username: firebaseUser.displayName || firebaseUser.email?.split('@')?.[0]
+          }
+        })
+      });
+
+      const backendJson = await backendResult.json();
+      const authPayload = backendJson?.data?.googleAuth;
+
+      if (!authPayload?.token || !authPayload?.user) {
+        throw new Error(backendJson?.errors?.[0]?.message || 'Google sign-in failed to create a backend session.');
+      }
+
+      const firebaseToken = await firebaseUser.getIdToken();
+      localStorage.setItem('token', authPayload.token);
+      localStorage.setItem('userRole', authPayload.user.role);
+      localStorage.setItem('userId', authPayload.user.id);
+      localStorage.setItem('firebaseToken', firebaseToken);
+      localStorage.setItem('firebaseUser', JSON.stringify({
+        uid: firebaseUser.uid,
+        email: firebaseUser.email,
+        displayName: firebaseUser.displayName,
+        backendUserId: authPayload.user.id,
+        backendRole: authPayload.user.role
+      }));
+
+      window.dispatchEvent(new Event('authChange'));
+
+      const dashboardRoute = {
+        CLIENT: '/client-dashboard',
+        FREELANCER: '/freelancer-dashboard',
+        ADMIN: '/admin'
+      }[authPayload.user.role] || '/';
+
+      navigate(dashboardRoute, { replace: true });
+    } catch (error) {
+      setFirebaseError(error.message || 'Authentication failed');
+      setFirebaseLoading(false);
+    }
+  };
 
   const [login, { loading, error }] = useMutation(LOGIN_USER, {
     onCompleted: (data) => {
@@ -52,28 +116,15 @@ const Login = () => {
     login({ variables: { ...formData } });
   };
 
-  const handleFirebaseSignIn = async () => {
+  const handleGoogleSignIn = async () => {
     setFirebaseLoading(true);
     setFirebaseError('');
     
-    const result = await signInWithEmail(formData.email, formData.password);
+    const result = await signInWithGoogle();
     
-    if (result.success) {
-      // Get Firebase token and store it
-      const token = await result.user.getIdToken();
-      localStorage.setItem('firebaseToken', token);
-      localStorage.setItem('firebaseUser', JSON.stringify({
-        uid: result.user.uid,
-        email: result.user.email,
-        displayName: result.user.displayName
-      }));
-      
-      // Dispatch event so Navbar re-renders
-      window.dispatchEvent(new Event('authChange'));
-      
-      // Redirect to home or dashboard
-      navigate('/freelancer-dashboard');
-    } else {
+    if (result.success && result.user) {
+      await completeGoogleSession(result.user);
+    } else if (!result.success) {
       setFirebaseError(result.error || 'Authentication failed');
     }
     
@@ -119,14 +170,14 @@ const Login = () => {
               <div className="w-full border-t border-slate-200"></div>
             </div>
             <div className="relative flex justify-center text-xs uppercase">
-              <span className="px-2 bg-white text-slate-500">Or continue with</span>
+              <span className="px-2 bg-white text-slate-500">Or continue with Google</span>
             </div>
           </div>
 
           <EmailAuthButton 
-            onClick={handleFirebaseSignIn}
-            disabled={firebaseLoading || !formData.email || !formData.password}
-            label={firebaseLoading ? "Signing in..." : "Sign in with Email"}
+            onClick={handleGoogleSignIn}
+            disabled={firebaseLoading}
+            label={firebaseLoading ? "Signing in..." : "Continue with Google"}
           />
         </form>
 

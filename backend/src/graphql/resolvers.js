@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { User, Job, Proposal, Message, Notification, Review, Profile, sequelize } = require('../../models');
 const { Op } = require('sequelize');
+const { ValidationError, UniqueConstraintError } = require('sequelize');
 
 const generateToken = (user) => {
   return jwt.sign(
@@ -201,18 +202,50 @@ const resolvers = {
   Mutation: {
     // --- AUTHENTICATION ---
     register: async (_, { username, email, password, role }, { io }) => {
-      
-      const hashedPassword = await bcrypt.hash(password, 10);
-      const user = await User.create({ username, email, password: hashedPassword, role });
-      io.emit('notification', { message: `Welcome our newest ${role.toLowerCase()}, ${username}!` });
-      // persist welcome notification for this user
-      await Notification.create({
-        userId: user.id,
-        message: `Welcome, ${username}! Your account has been created.`,
-        isRead: false
-      });
-      const token = generateToken(user);
-      return { token, user };
+      try {
+        const normalizedEmail = email.trim().toLowerCase();
+        const normalizedUsername = username.trim();
+        const normalizedRole = (role || 'FREELANCER').trim().toUpperCase();
+
+        if (!['CLIENT', 'FREELANCER', 'ADMIN'].includes(normalizedRole)) {
+          throw new Error('Invalid role. Choose CLIENT or FREELANCER.');
+        }
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const user = await User.create({
+          username: normalizedUsername,
+          email: normalizedEmail,
+          password: hashedPassword,
+          role: normalizedRole
+        });
+
+        io?.emit('notification', { message: `Welcome our newest ${normalizedRole.toLowerCase()}, ${normalizedUsername}!` });
+        // persist welcome notification for this user
+        await Notification.create({
+          userId: user.id,
+          message: `Welcome, ${normalizedUsername}! Your account has been created.`,
+          isRead: false
+        });
+        const token = generateToken(user);
+        return { token, user };
+      } catch (error) {
+        if (error instanceof UniqueConstraintError) {
+          const fieldNames = error.errors.map((entry) => entry.path).filter(Boolean);
+          if (fieldNames.includes('email')) {
+            throw new Error('This email is already registered. Use a different email or sign in.');
+          }
+          if (fieldNames.includes('username')) {
+            throw new Error('This username is already taken. Please choose another one.');
+          }
+          throw new Error('A user with those details already exists.');
+        }
+
+        if (error instanceof ValidationError) {
+          throw new Error(error.errors?.[0]?.message || 'Invalid registration details.');
+        }
+
+        throw error;
+      }
     },
 
     login: async (_, { email, password }) => {
@@ -220,6 +253,33 @@ const resolvers = {
       if (!user) throw new Error("User not found");
       const valid = await bcrypt.compare(password, user.password);
       if (!valid) throw new Error("Invalid password");
+      const token = generateToken(user);
+      return { token, user };
+    },
+    googleAuth: async (_, { email, username }) => {
+      const normalizedEmail = email.trim().toLowerCase();
+      const existingUser = await User.findOne({ where: { email: normalizedEmail } });
+
+      if (existingUser) {
+        if (existingUser.role !== 'CLIENT') {
+          await existingUser.update({ role: 'CLIENT' });
+        }
+        const token = generateToken(existingUser);
+        return { token, user: existingUser };
+      }
+
+      const fallbackUsername = (username || normalizedEmail.split('@')[0] || 'user').trim();
+      const uniqueUsername = await User.findOne({ where: { username: fallbackUsername } });
+      const baseUsername = uniqueUsername ? `${fallbackUsername}_${Date.now().toString().slice(-4)}` : fallbackUsername;
+      const randomPassword = await bcrypt.hash(`${normalizedEmail}:${Date.now()}`, 10);
+
+      const user = await User.create({
+        username: baseUsername,
+        email: normalizedEmail,
+        password: randomPassword,
+        role: 'CLIENT'
+      });
+
       const token = generateToken(user);
       return { token, user };
     },
