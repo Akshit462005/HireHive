@@ -12,6 +12,41 @@ const generateToken = (user) => {
   );
 };
 
+const createMailTransport = () => {
+  const transportMode = (process.env.MAIL_TRANSPORT || '').trim().toLowerCase();
+  const isProduction = (process.env.NODE_ENV || 'development').trim().toLowerCase() === 'production';
+
+  if (transportMode === 'json') {
+    return nodemailer.createTransport({ jsonTransport: true });
+  }
+
+  if (!transportMode && !isProduction) {
+    return nodemailer.createTransport({ jsonTransport: true });
+  }
+
+  if (process.env.SMTP_HOST) {
+    return nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT || 587),
+      secure: String(process.env.SMTP_SECURE || 'false').toLowerCase() === 'true',
+      auth: process.env.SMTP_USER
+        ? {
+            user: process.env.SMTP_USER,
+            pass: process.env.SMTP_PASS
+          }
+        : undefined
+    });
+  }
+
+  return nodemailer.createTransport({
+    service: process.env.EMAIL_SERVICE || 'gmail',
+    auth: {
+      user: process.env.EMAIL_USER || 'your-email@gmail.com',
+      pass: process.env.EMAIL_PASS || 'your-app-password'
+    }
+  });
+};
+
 const resolvers = {
   Query: {
     users: async () => await User.findAll({ include: ['postedJobs', 'profile'] }),
@@ -348,18 +383,13 @@ const resolvers = {
     // --- Contact Form ---
     submitContactForm: async (_, { name, email, message }) => {
       // Create transporter
-      const transporter = nodemailer.createTransporter({
-        service: 'gmail', // or your email service
-        auth: {
-          user: process.env.EMAIL_USER || 'your-email@gmail.com',
-          pass: process.env.EMAIL_PASS || 'your-app-password'
-        }
-      });
+      const transporter = createMailTransport();
 
       // Email options
       const mailOptions = {
-        from: email,
-        to: 'admin@hirehive.com', // your admin email
+        from: process.env.EMAIL_USER || email,
+        to: process.env.ADMIN_EMAIL || process.env.EMAIL_USER || 'admin@hirehive.com',
+        replyTo: email,
         subject: `Contact Form Submission from ${name}`,
         text: `Name: ${name}\nEmail: ${email}\n\nMessage:\n${message}`
       };
@@ -375,6 +405,9 @@ const resolvers = {
         };
       } catch (error) {
         console.error('Email send error:', error);
+        if (error && (error.code === 'EAUTH' || error.responseCode === 534)) {
+          throw new Error('Email authentication failed. Gmail requires an app password or set MAIL_TRANSPORT=json / SMTP_* for local development.');
+        }
         throw new Error('Failed to send message. Please try again later.');
       }
     },
